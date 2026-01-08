@@ -1,0 +1,13 @@
+
+Stress test summary:
+  Target URL:  http://172.16.0.3:8916/
+  Configured Concurrency: 100000 (Simulated Users)
+  Requested:   500
+  Completed:   500
+  Success:     286 (57.2%)
+  Failure:     214
+  Status codes: {200: 286}
+  Duration:    10.24s
+  Requests/s:  48.81
+  Latency (s): avg=4.5022 min=0.0370 max=9.7898
+  Estimated Avg. Concurrent Users: 219.76

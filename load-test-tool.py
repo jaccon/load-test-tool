@@ -31,17 +31,10 @@ from typing import Optional
 import requests
 from requests import RequestException
 from tqdm import tqdm
-import threading
-import os
-import sys
 
 # External (editable) defaults
-# You can change `TOTAL_REQUESTS` directly in this file, or export
-# environment variable `STRESS_TOTAL_REQUESTS`, or pass `--requests` on CLI.
 TOTAL_REQUESTS = int(os.environ.get("STRESS_TOTAL_REQUESTS", "100"))
-# Default concurrency (threads)
 DEFAULT_CONCURRENCY = int(os.environ.get("STRESS_CONCURRENCY", "10"))
-# Default target URL (can be overridden via CLI)
 DEFAULT_URL = os.environ.get("STRESS_TARGET_URL", "https://example.com")
 
 
@@ -60,7 +53,7 @@ def make_request(session: requests.Session, method: str, url: str, timeout: floa
         return False, None, elapsed, str(e)
 
 
-def run_stress_test(url: str, total_requests: int, concurrency: int, method: str = "GET", timeout: float = 10.0, data: Optional[bytes] = None, headers: Optional[dict] = None):
+def run_stress_test(url: str, total_requests: int, concurrency: int, method: str = "GET", timeout: float = 10.0, data: Optional[bytes] = None, headers: Optional[dict] = None, save_report: bool = False):
     """Run the stress test and print a summary.
 
     Returns a dict with metrics.
@@ -78,6 +71,7 @@ def run_stress_test(url: str, total_requests: int, concurrency: int, method: str
     # Platform-specific single-key listener to set stop_requested when 's' or 'S' pressed.
     def key_listener():
         try:
+            import select
             if os.name == 'nt':
                 import msvcrt
                 while not stop_requested.is_set():
@@ -88,7 +82,7 @@ def run_stress_test(url: str, total_requests: int, concurrency: int, method: str
                             break
                     time.sleep(0.1)
             else:
-                import sys, tty, termios
+                import tty, termios
                 fd = sys.stdin.fileno()
                 old = termios.tcgetattr(fd)
                 try:
@@ -106,7 +100,6 @@ def run_stress_test(url: str, total_requests: int, concurrency: int, method: str
             return
 
     # start background listener
-    import select
     listener_thread = threading.Thread(target=key_listener, daemon=True)
     listener_thread.start()
 
@@ -118,6 +111,7 @@ def run_stress_test(url: str, total_requests: int, concurrency: int, method: str
     futures = []
     pbar = tqdm(total=total_requests if total_requests < 10**9 else None, desc="Requests", unit="req")
 
+    test_start = time.perf_counter()
     try:
         with ThreadPoolExecutor(max_workers=concurrency) as exe:
             submitted = 0
@@ -162,38 +156,62 @@ def run_stress_test(url: str, total_requests: int, concurrency: int, method: str
     finally:
         pbar.close()
 
+    test_duration = time.perf_counter() - test_start
     total_done = success_count + failure_count
     avg_latency = (sum(latencies) / len(latencies)) if latencies else 0.0
     min_latency = min(latencies) if latencies else 0.0
     max_latency = max(latencies) if latencies else 0.0
+    rps = total_done / test_duration if test_duration > 0 else 0.0
+    # Average Concurrent Users = RPS * Average Latency (Little's Law)
+    avg_concurrent_users = rps * avg_latency
+    success_rate = (success_count / total_done * 100) if total_done > 0 else 0.0
 
     metrics = {
         "requested": total_requests,
         "completed": total_done,
         "success": success_count,
         "failure": failure_count,
+        "success_rate": success_rate,
         "statuses": dict(statuses),
         "avg_latency_s": avg_latency,
         "min_latency_s": min_latency,
         "max_latency_s": max_latency,
+        "duration_s": test_duration,
+        "rps": rps,
+        "avg_concurrent_users": avg_concurrent_users,
     }
 
-    # Print a compact summary
-    print("\nStress test summary:")
-    print(f"  Target URL: {url}")
-    print(f"  Requested: {total_requests}")
-    print(f"  Completed: {total_done}")
-    print(f"  Success:   {success_count}")
-    print(f"  Failure:   {failure_count}")
-    print(f"  Status codes: {dict(statuses)}")
-    print(f"  Latency (s): avg={avg_latency:.4f} min={min_latency:.4f} max={max_latency:.4f}")
+    summary = [
+        "\nStress test summary:",
+        f"  Target URL:  {url}",
+        f"  Configured Concurrency: {concurrency} (Simulated Users)",
+        f"  Requested:   {total_requests}",
+        f"  Completed:   {total_done}",
+        f"  Success:     {success_count} ({success_rate:.1f}%)",
+        f"  Failure:     {failure_count}",
+        f"  Status codes: {dict(statuses)}",
+        f"  Duration:    {test_duration:.2f}s",
+        f"  Requests/s:  {rps:.2f}",
+        f"  Latency (s): avg={avg_latency:.4f} min={min_latency:.4f} max={max_latency:.4f}",
+        f"  Estimated Avg. Concurrent Users: {avg_concurrent_users:.2f}"
+    ]
+
+    summary_text = "\n".join(summary)
+    print(summary_text)
+
+    if save_report:
+        from datetime import datetime
+        filename = f"stress_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        with open(filename, "w") as f:
+            f.write(summary_text)
+            f.write("\n")
+        print(f"\nReport saved to: {filename}")
 
     return metrics
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Multithreaded HTTP stress test with progress bar (tqdm)")
-    # CLI defaults come from environment or top-level constants; CLI always overrides env.
     p.add_argument("--url", "-u", default=os.environ.get("STRESS_TARGET_URL", DEFAULT_URL), help="Target URL to hit")
     p.add_argument("--requests", "-r", type=int, default=int(os.environ.get("STRESS_TOTAL_REQUESTS", TOTAL_REQUESTS)), help="Total number of requests to send")
     p.add_argument("--concurrency", "-c", type=int, default=int(os.environ.get("STRESS_CONCURRENCY", DEFAULT_CONCURRENCY)), help="Number of concurrent worker threads")
@@ -201,12 +219,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--method", "-m", default="GET", help="HTTP method to use")
     p.add_argument("--paranoid", action="store_true", help="Run in paranoid mode: push the system using max CPU concurrency until interrupted or --max-requests is reached")
     p.add_argument("--max-requests", type=int, default=0, help="Optional cap for paranoid mode; 0 means unlimited until interrupted")
+    p.add_argument("--report", action="store_true", help="Save the test summary to a timestamped .log file")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    # Defensive checks
     if args.requests <= 0:
         print("--requests must be > 0", file=sys.stderr)
         sys.exit(2)
@@ -214,23 +232,31 @@ def main():
         print("--concurrency must be > 0", file=sys.stderr)
         sys.exit(2)
 
-    # Paranoid mode: maximize concurrency to number of CPU cores and optionally send unlimited requests
     if args.paranoid:
-        import os
         cpu_count = os.cpu_count() or 1
         concurrency = cpu_count
-        if args.max_requests and args.max_requests > 0:
-            total_requests = args.max_requests
-        else:
-            # Use a large sentinel number but allow KeyboardInterrupt to stop
-            total_requests = 10 ** 12
+        total_requests = args.max_requests if args.max_requests > 0 else 10 ** 12
         print(f"Running in PARANOID mode: concurrency={concurrency}, max_requests={'unlimited' if args.max_requests==0 else total_requests}")
         try:
-            run_stress_test(url=args.url, total_requests=total_requests, concurrency=concurrency, method=args.method, timeout=args.timeout)
+            run_stress_test(
+                url=args.url, 
+                total_requests=total_requests, 
+                concurrency=concurrency, 
+                method=args.method, 
+                timeout=args.timeout,
+                save_report=args.report
+            )
         except KeyboardInterrupt:
             print("\nParanoid run interrupted by user.")
     else:
-        run_stress_test(url=args.url, total_requests=args.requests, concurrency=args.concurrency, method=args.method, timeout=args.timeout)
+        run_stress_test(
+            url=args.url, 
+            total_requests=args.requests, 
+            concurrency=args.concurrency, 
+            method=args.method, 
+            timeout=args.timeout,
+            save_report=args.report
+        )
 
 
 if __name__ == "__main__":

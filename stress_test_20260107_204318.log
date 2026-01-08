@@ -1,0 +1,13 @@
+
+Stress test summary:
+  Target URL:  https://www.google.com
+  Configured Concurrency: 2 (Simulated Users)
+  Requested:   5
+  Completed:   5
+  Success:     5 (100.0%)
+  Failure:     0
+  Status codes: {200: 5}
+  Duration:    0.56s
+  Requests/s:  8.96
+  Latency (s): avg=0.2182 min=0.1137 max=0.4170
+  Estimated Avg. Concurrent Users: 1.96
